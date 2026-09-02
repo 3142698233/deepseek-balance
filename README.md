@@ -4,6 +4,8 @@
 
 > 纯 Python 标准库实现，无需安装任何第三方依赖（Python 3.6+）。提供 exe 单文件版本，双击即用。
 
+![DeepSeek 余额悬浮窗](screenshot.png)
+
 ## 功能亮点
 
 - 🔍 实时查询 DeepSeek 账户余额（总余额 / 赠送余额 / 充值余额）
