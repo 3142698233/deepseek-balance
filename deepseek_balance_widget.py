@@ -36,7 +36,8 @@ import time
 import urllib.error
 import urllib.request
 import tkinter as tk
-from datetime import datetime, timedelta, timezone
+
+import pricing  # 同目录模块: 峰谷时段 + 中国法定节假日判定
 
 API_BASE = "https://api.deepseek.com"
 BALANCE_ENDPOINT = "/user/balance"
@@ -167,40 +168,6 @@ def fmt_money(symbol, value):
         return "%s%.2f" % (symbol, float(value))
     except (TypeError, ValueError):
         return "%s%s" % (symbol, value)
-
-
-# ------- 时段判定（DeepSeek 计价规则） -------
-# 高峰时段: 北京时间周一~周五 9:00-12:00、14:00-18:00；其余为空闲时段（价格半价）
-BEIJING_TZ = timezone(timedelta(hours=8))
-PEAK_RANGES = ((9 * 60, 12 * 60), (14 * 60, 18 * 60))  # 分钟
-
-
-def get_period(now=None):
-    """返回当前时段: "peak" 高峰 / "offpeak" 空闲（默认按北京时间）。"""
-    now = now or datetime.now(BEIJING_TZ)
-    if now.weekday() >= 5:  # 周六、周日
-        return "offpeak"
-    hm = now.hour * 60 + now.minute
-    for start, end in PEAK_RANGES:
-        if start <= hm < end:
-            return "peak"
-    return "offpeak"
-
-
-def next_boundary(now=None):
-    """返回 (下次时段切换的北京时间, 切换后的时段)；8 天内没有切换则返回 (None, 当前时段)。"""
-    now = now or datetime.now(BEIJING_TZ)
-    cur = get_period(now)
-    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    for d in range(8):
-        dt = day + timedelta(days=d)
-        if dt.weekday() >= 5:
-            continue
-        for hh in (9, 12, 14, 18):
-            cand = dt.replace(hour=hh, minute=0, second=0, microsecond=0)
-            if cand > now and get_period(cand) != cur:
-                return cand, get_period(cand)
-    return None, cur
 
 
 class _RowSlot:
@@ -339,6 +306,9 @@ class BalanceWidget:
         self.last_ok = None             # 最近一次成功的数据
         self.error_text = None
         self.last_update_text = "--:--:--"
+        self._period_text = None        # 时段行当前文案（未变则跳过重排）
+        self._pinned_right = None       # 贴右上角时锁定的右边缘 x 坐标
+        self._last_reqwidth = 0
 
         root.title("DeepSeek 余额")
         root.overrideredirect(True)
@@ -392,7 +362,23 @@ class BalanceWidget:
         else:
             sw = self.root.winfo_screenwidth()
             x, y = sw - w - 24, 48          # 默认右上角
+            # 记住右边缘: 时段文案（周末/节假日/跨假期）长度会变，
+            # 窗口随之变宽，锁定右边缘才不会向右溢出屏幕。
+            self._pinned_right = x + w
         self.root.geometry("+%d+%d" % (x, y))
+
+    def _reanchor_right(self):
+        """保持默认右上角位置时的右边缘不动（窗口变宽就向左长，不会溢出屏幕）。"""
+        if self._pinned_right is None:
+            return
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth()
+        if width == self._last_reqwidth:
+            return
+        self._last_reqwidth = width
+        x = max(0, self._pinned_right - width)
+        if x != self.root.winfo_x():
+            self.root.geometry("+%d+%d" % (x, self.root.winfo_y()))
 
     # ---------- 事件 ----------
     def _bind_events(self, args):
@@ -437,7 +423,15 @@ class BalanceWidget:
         self._drag_y = event.y_root - self.root.winfo_y()
 
     def _drag_move(self, event):
-        self.root.geometry("+%d+%d" % (event.x_root - self._drag_x, event.y_root - self._drag_y))
+        x = event.x_root - self._drag_x
+        y = event.y_root - self._drag_y
+        self.root.geometry("+%d+%d" % (x, y))
+        # 拖回右上角附近就重新锁定右边缘；拖到别处则不再自动调整位置
+        right = x + self.root.winfo_reqwidth()
+        if abs(right - (self.root.winfo_screenwidth() - 24)) <= 8:
+            self._pinned_right = right
+        else:
+            self._pinned_right = None
 
     def _show_menu(self, event):
         try:
@@ -609,17 +603,26 @@ class BalanceWidget:
         self.footer_label.config(text=text)
 
     def _update_period(self):
-        """更新当前时段指示（高峰/空闲），附下次切换时间，到点自动切换。"""
-        period = get_period()
-        nxt, nxt_period = next_boundary()
+        """更新当前时段指示（高峰/空闲半价），附下次切换时间，到点自动切换。"""
+        now = pricing.beijing_now()
+        period, reason = pricing.period_reason(now)
         if period == "peak":
             text, color = "\u25c6 高峰时段", WARN
         else:
             text, color = "\u25c6 空闲时段 \u00b7 半价", OK
-        if nxt is not None:
-            text += " \u00b7 %s 转%s" % (nxt.strftime("%H:%M"),
+            if reason:  # 周末 / 法定假日名，让用户知道为什么是空闲
+                text += " \u00b7 " + reason
+        nxt, nxt_period = pricing.next_boundary(now)
+        when = pricing.format_boundary(nxt, now)
+        if when:
+            text += " \u00b7 %s 转%s" % (when,
                                          "高峰" if nxt_period == "peak" else "空闲")
-        self.period_label.config(text=text, fg=color)
+        if not pricing.has_holiday_data(now.year):
+            text += " \u00b7 %d 年假期表待更新" % now.year
+        if text != self._period_text:   # 文案没变就不动，避免每秒触发重排
+            self._period_text = text
+            self.period_label.config(text=text, fg=color)
+            self._reanchor_right()
 
     def _tick(self):
         self.countdown -= 1

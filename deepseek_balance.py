@@ -34,43 +34,13 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+
+import pricing  # 同目录模块: 峰谷时段 + 中国法定节假日判定
 
 API_BASE = "https://api.deepseek.com"
 BALANCE_ENDPOINT = "/user/balance"
 DEFAULT_TIMEOUT = 15
 
-# 计价时段: 高峰 = 北京时间周一~周五 9:00-12:00、14:00-18:00；其余空闲（价格半价）
-BEIJING_TZ = timezone(timedelta(hours=8))
-PEAK_RANGES = ((9 * 60, 12 * 60), (14 * 60, 18 * 60))
-
-
-def get_period(now=None):
-    """返回当前时段: "peak" 高峰 / "offpeak" 空闲（默认按北京时间）。"""
-    now = now or datetime.now(BEIJING_TZ)
-    if now.weekday() >= 5:
-        return "offpeak"
-    hm = now.hour * 60 + now.minute
-    for start, end in PEAK_RANGES:
-        if start <= hm < end:
-            return "peak"
-    return "offpeak"
-
-
-def next_boundary(now=None):
-    """返回 (下次时段切换时间, 切换后的时段)。"""
-    now = now or datetime.now(BEIJING_TZ)
-    cur = get_period(now)
-    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    for d in range(8):
-        dt = day + timedelta(days=d)
-        if dt.weekday() >= 5:
-            continue
-        for hh in (9, 12, 14, 18):
-            cand = dt.replace(hour=hh, minute=0, second=0, microsecond=0)
-            if cand > now and get_period(cand) != cur:
-                return cand, get_period(cand)
-    return None, cur
 
 # HTTP 错误码 -> 中文说明
 HTTP_ERROR_MESSAGES = {
@@ -197,13 +167,7 @@ def format_human(data):
     """把接口返回的 JSON 格式化成易读的多行文本。"""
     lines = ["DeepSeek 账户余额", "-" * 36]
     lines.append("账户状态: %s" % ("可用" if data.get("is_available") else "不可用"))
-    period = get_period()
-    nxt, nxt_period = next_boundary()
-    ptext = "高峰时段" if period == "peak" else "空闲时段（价格半价）"
-    if nxt is not None:
-        ptext += " \u00b7 %s 转%s" % (nxt.strftime("%H:%M"),
-                                      "高峰" if nxt_period == "peak" else "空闲")
-    lines.append("当前时段: %s" % ptext)
+    lines.append("当前时段: %s" % pricing.period_text())
     infos = data.get("balance_infos") or []
     if not infos:
         lines.append("未查询到余额信息")

@@ -4,8 +4,11 @@ dist/
 __pycache__/
 *.pyc
 
-# 临时测试文件
-_test_*.py
+# 临时测试/诊断文件与产物（脚本 + 结果 + 截图）
+_test_*
+_live_*
+_*.txt
+_*.png
 
 # IDE
 .vscode/
