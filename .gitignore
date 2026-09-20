@@ -14,3 +14,9 @@ _test_*.py
 # OS
 Thumbs.db
 .DS_Store
+
+# 交接文档（含本机路径与账号信息，不公开）
+HANDOFF.md
+
+# 误放进项目目录的无关仓库
+PPT-Design-Skill/
